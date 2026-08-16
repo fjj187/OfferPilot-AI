@@ -2,6 +2,7 @@
 #include <string>
 #include <functional>
 #include <memory>
+#include <atomic>
 #include "types/InterviewTypes.hpp"  // InterviewStreamRequest, InterviewStreamEvent
 
 
@@ -9,7 +10,7 @@
 struct ProviderContext {
     std::string requestId;
     int timeoutMs = 30000;          // 默认 30 秒
-    bool cancelFlag = false;        // 可由外部置 true 来取消
+    std::atomic<bool> cancelFlag{false}; // 可由外部置 true 来取消
     std::string providerName;
 };
 

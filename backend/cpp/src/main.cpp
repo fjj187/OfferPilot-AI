@@ -1,112 +1,61 @@
-#include <windows.h>
+#include <iostream>
 #include <memory>
-#include <cstdlib>
-#include <fstream>
-#include <sstream>
-#include <algorithm>
-#include <filesystem>
+#include <string>
 
 #include "Config/app_config.hpp"
-#include "http_server.hpp"
-#include "providers/MockInterviewProviders.hpp"
-#include "providers/OpenAIInterviewProvider.hpp"
+#include "Controller/AuthController.hpp"
+#include "Controller/InterviewStreamController.hpp"
+#include "Controller/interview_controller.hpp"
 #include "Client/OpenAIReportAiClient.hpp"
 #include "Pool/MySQLConnectionPool.hpp"
-#include "repositories/MySQLSessionRepository.hpp"
-#include "repositories/MySQLReportRepository.hpp"
-#include "repositories/MySQLAuthUserRepository.hpp"
+#include "Routes/AuthRoutes.hpp"
+#include "Routes/InterviewRoutes.hpp"
+#include "Hasher/PasswordHasher.hpp"
+#include "manager/InterviewStreamManager.hpp"
+#include "providers/MockInterviewProviders.hpp"
+#include "providers/OpenAIInterviewProvider.hpp"
 #include "repositories/MySQLAuthSessionRepository.hpp"
+#include "repositories/MySQLAuthUserRepository.hpp"
+#include "repositories/MySQLReportRepository.hpp"
+#include "repositories/MySQLSessionRepository.hpp"
+#include "services/AuthService.hpp"
 #include "services/InterviewService.hpp"
 #include "services/ReportService.hpp"
-#include "services/AuthService.hpp"
-#include "Controller/AuthController.hpp"
-#include "Routes/AuthRoutes.hpp"
-#include "Controller/interview_controller.hpp"
-#include "Routes/InterviewRoutes.hpp"
+#include "platform/DeploymentBootstrap.hpp"
+#include "http_server.hpp"
+#include "json.hpp"
 
-static std::string envOr(const char* key, const std::string& fallback = "") {
-    const char* value = std::getenv(key);
-    return value ? std::string(value) : fallback;
-}
+namespace {
 
-static std::string envOrAny(std::initializer_list<const char*> keys, const std::string& fallback = "") {
-    for (const char* key : keys) {
-        const char* value = std::getenv(key);
-        if (value && *value) {
-            return std::string(value);
-        }
-    }
-    return fallback;
-}
-
-static std::string trim(const std::string& text) {
-    const auto first = text.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) {
-        return {};
-    }
-    const auto last = text.find_last_not_of(" \t\r\n");
-    return text.substr(first, last - first + 1);
-}
-
-static void loadEnvFile(const std::filesystem::path& filePath) {
-    std::ifstream in(filePath);
-    if (!in.is_open()) {
-        return;
+bool validateDatabaseConnection(MySQLConnectionPool& mysqlPool) {
+    const MySQLConnHandle conn = mysqlPool.acquire();
+    if (!conn) {
+        std::cerr << "[startup] unable to acquire MySQL connection for readiness check" << std::endl;
+        return false;
     }
 
-    std::string line;
-    while (std::getline(in, line)) {
-        const auto normalizedLine = trim(line);
-        if (normalizedLine.empty() || normalizedLine.front() == '#') {
-            continue;
-        }
-
-        const auto eqPos = normalizedLine.find('=');
-        if (eqPos == std::string::npos) {
-            continue;
-        }
-
-        const auto key = trim(normalizedLine.substr(0, eqPos));
-        auto value = trim(normalizedLine.substr(eqPos + 1));
-        if (key.empty() || value.empty()) {
-            continue;
-        }
-
-        if ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\'')) {
-            value = value.substr(1, value.size() - 2);
-        }
-
-        const char* existingValue = std::getenv(key.c_str());
-        if (existingValue == nullptr || *existingValue == '\0') {
-            _putenv_s(key.c_str(), value.c_str());
-        }
-    }
-}
-
-static std::filesystem::path getExecutableDir() {
-    wchar_t buffer[MAX_PATH];
-    const auto len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) {
-        return std::filesystem::current_path();
+    if (!conn->query("SELECT 1") || !conn->next()) {
+        std::cerr << "[startup] MySQL readiness check failed" << std::endl;
+        return false;
     }
 
-    return std::filesystem::path(buffer).parent_path();
+    return true;
 }
+
+}  // namespace
 
 int main() {
-    SetConsoleOutputCP(65001);
-    SetConsoleCP(65001);
-
-    const auto exeDir = getExecutableDir();
-    loadEnvFile((exeDir / ".." / ".env").lexically_normal());
-    loadEnvFile((std::filesystem::current_path() / ".env").lexically_normal());
+    deployment::initializeConsole();
+    deployment::loadDefaultEnvFiles();
 
     AppConfig& config = AppConfig::loadFromEnv();
-    if (!config.isConfigValid()) {
+    std::string configError;
+    if (!config.isConfigValid(&configError)) {
+        std::cerr << "[startup] configuration invalid: " << configError << std::endl;
         return 1;
     }
 
-    HttpServer httpServer(config.httpPort);
+    HttpServer httpServer(config.httpPort, config.httpBindHost);
     httpServer.setupMiddleware();
     httpServer.setupErrorHandler();
 
@@ -114,8 +63,7 @@ int main() {
         res.set_content(R"({"success":true,"message":"ok"})", "application/json");
     });
 
-    // 先创建数据库连接池，再把池注入到各个仓储。
-    // 仓储不再持有单个 MySQLConn，避免多线程请求共享同一连接。
+    // Keep the MySQL pool sized conservatively and verify it before serving traffic.
     MySQLPoolConfig mysqlPoolCfg;
     mysqlPoolCfg.host = config.dbHost;
     mysqlPoolCfg.user = config.dbUser;
@@ -127,6 +75,9 @@ int main() {
     mysqlPoolCfg.acquireTimeoutMs = 3000;
 
     MySQLConnectionPool mysqlPool(mysqlPoolCfg);
+    if (!validateDatabaseConnection(mysqlPool)) {
+        return 1;
+    }
 
     MySQLSessionRepository sessionRepo(mysqlPool);
     MySQLReportRepository reportRepo(mysqlPool);
@@ -135,74 +86,64 @@ int main() {
     PasswordHasher passwordHasher;
 
     std::unique_ptr<InterviewProvider> interviewProvider;
-    const bool useMock = envOr("USE_MOCK_INTERVIEW_PROVIDER") == "1";
-
-    if (useMock) {
+    if (config.useMockInterviewProvider) {
         interviewProvider = std::make_unique<MockInterviewProvider>();
     } else {
         interviewProvider = std::make_unique<OpenAIInterviewProvider>(
-            envOrAny({
-                "OPENAI_API_KEY",
-                "ALIYUN_API_KEY",
-                "DASHSCOPE_API_KEY",
-                "INTERVIEW_REMOTE_API_KEY"
-            }),
-            envOrAny({
-                "OPENAI_BASE_URL",
-                "ALIYUN_BASE_URL",
-                "DASHSCOPE_BASE_URL",
-                "INTERVIEW_REMOTE_BASE_URL"
-            }, "https://api.openai.com/v1"),
-            envOrAny({
-                "OPENAI_INTERVIEW_MODEL",
-                "ALIYUN_INTERVIEW_MODEL",
-                "DASHSCOPE_INTERVIEW_MODEL",
-                "INTERVIEW_REMOTE_MODEL"
-            }, "gpt-4o-mini")
+            config.openAiApiKey,
+            config.openAiBaseUrl,
+            config.openAiInterviewModel
         );
     }
 
     OpenAIReportAiClient reportAiClient(
-        envOrAny({
-            "OPENAI_API_KEY",
-            "ALIYUN_API_KEY",
-            "DASHSCOPE_API_KEY",
-            "INTERVIEW_REMOTE_API_KEY"
-        }),
-        envOrAny({
-            "OPENAI_BASE_URL",
-            "ALIYUN_BASE_URL",
-            "DASHSCOPE_BASE_URL",
-            "INTERVIEW_REMOTE_BASE_URL"
-        }, "https://api.openai.com/v1"),
-        envOrAny({
-            "OPENAI_REPORT_MODEL",
-            "ALIYUN_REPORT_MODEL",
-            "DASHSCOPE_REPORT_MODEL",
-            "INTERVIEW_REMOTE_MODEL"
-        }, "gpt-4o-mini"),
-        std::stoi(envOr("OPENAI_TIMEOUT_MS", "30000"))
+        config.openAiApiKey,
+        config.openAiBaseUrl,
+        config.openAiReportModel,
+        config.openAiTimeoutMs
     );
 
     InterviewService interviewService(*interviewProvider, sessionRepo);
+    InterviewStreamManager streamManager(*interviewProvider, sessionRepo, InterviewStreamManager::Config{});
+    httpServer.get("/api/metrics", [&mysqlPool, &streamManager](const httplib::Request&, httplib::Response& res) {
+        const auto db = mysqlPool.stats();
+        const auto streams = streamManager.stats();
+        nlohmann::json body = {
+            {"streams", {{"accepted", streams.accepted}, {"completed", streams.completed},
+                {"rejected", streams.rejected}, {"cancelled", streams.cancelled},
+                {"active", streams.active}, {"peakActive", streams.peakActive},
+                {"queued", streams.queued}, {"peakQueued", streams.peakQueued}}},
+            {"mysql", {{"acquireRequests", db.acquireRequests}, {"idleHits", db.idleHits},
+                {"newConnections", db.newConnections}, {"acquireTimeouts", db.acquireTimeouts},
+                {"failedConnections", db.failedConnections}, {"hitRate", db.acquireRequests == 0 ? 0.0 : static_cast<double>(db.idleHits) / db.acquireRequests}}},
+            {"pool", {{"idle", mysqlPool.idleSize()}, {"busy", mysqlPool.busySize()}, {"total", mysqlPool.totalSize()}}}
+        };
+        res.set_content(body.dump(), "application/json");
+    });
     ReportService reportService(sessionRepo, reportRepo, reportAiClient);
 
     AuthService authService(
         authUserRepo,
         authSessionRepo,
         passwordHasher,
-        std::stoi(envOr("AUTH_TOKEN_TTL_SECONDS", "86400"))
+        config.authTokenTtlSeconds
     );
 
     InterviewController controller(interviewService, reportService);
-    InterviewRoutes routes(httpServer, controller);
+    InterviewStreamController streamController(streamManager);
+    InterviewRoutes routes(httpServer, controller, streamController);
 
     AuthController authController(authService);
     AuthRoutes authRoutes(httpServer, authController);
     authRoutes.registerRoutes();
-
     routes.registerRoutes();
 
-    httpServer.start();
+    std::cout << "[startup] listening on " << config.httpBindHost << ':' << config.httpPort << std::endl;
+    if (!httpServer.start()) {
+        std::cerr << "[startup] failed to bind HTTP server on " << config.httpBindHost
+                  << ':' << config.httpPort << std::endl;
+        return 1;
+    }
+
     return 0;
 }

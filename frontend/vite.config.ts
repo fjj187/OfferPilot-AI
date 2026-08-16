@@ -155,6 +155,10 @@ export default defineConfig(({ mode }) => {
         {
           find: '@',
           replacement: path.resolve(__dirname, 'src')
+        },
+        {
+          find: 'tslib',
+          replacement: path.resolve(__dirname, '../node_modules/tslib/tslib.es6.mjs')
         }
       ]
     },

@@ -211,41 +211,6 @@ std::string InterviewController::serializeSseEvent(const std::string& eventName,
     return "event: " + eventName + "\ndata: " + data + "\n\n";
 }
 
-void InterviewController::streamInterview(const httplib::Request& req, httplib::Response& res) {
-    try {
-        const auto body = nlohmann::json::parse(req.body);
-        const auto request = parseStreamRequest(body);
-
-        res.set_header("Content-Type", "text/event-stream; charset=utf-8");
-        res.set_header("Cache-Control", "no-cache, no-transform");
-        res.set_header("Connection", "keep-alive");
-
-        res.set_chunked_content_provider("text/event-stream",
-            [this, request](size_t, httplib::DataSink& sink) {
-                m_service.streamInterview(
-                    request,
-                    [&](const InterviewStreamEvent& event) {
-                        if (event.type == InterviewStreamEventType::Chunk && event.content.has_value()) {
-                            const auto payload = serializeSseEvent("chunk", event.content.value());
-                            sink.write(payload.c_str(), payload.size());
-                        } else if (event.type == InterviewStreamEventType::Done) {
-                            const auto payload = serializeSseEvent("done", "{}");
-                            sink.write(payload.c_str(), payload.size());
-                        } else if (event.type == InterviewStreamEventType::Error && event.error.has_value()) {
-                            const auto payload = serializeSseEvent("error", event.error->message);
-                            sink.write(payload.c_str(), payload.size());
-                        }
-                    });
-
-                return false;
-            });
-    } catch (const std::exception& e) {
-        res.status = 400;
-        res.set_content(std::string("{\"success\":false,\"error\":\"") + e.what() + "\"}",
-                        "application/json");
-    }
-}
-
 void InterviewController::generateReport(const httplib::Request& req, httplib::Response& res) {
     try {
         const auto body = nlohmann::json::parse(req.body);

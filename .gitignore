@@ -37,6 +37,9 @@ node_modules
 /backend/cpp/*.o
 /backend/cpp/*.tmp
 /backend/cpp/*.log
+/backend/cpp/*.exe
+/backend/cpp/.vs/
+/backend/cpp/bench/*.log
 
 # production (legacy root paths - can be removed manually)
 /dist
@@ -67,6 +70,7 @@ vite-stderr.log
 .claude/settings.local.json
 AGENTS.md
 CODEX.md
+/backend/cpp/docx/
 
 # npm lockfile (project uses pnpm)
 package-lock.json
@@ -76,3 +80,4 @@ package-lock.json
 
 # local logs
 /logs/
+/*.log

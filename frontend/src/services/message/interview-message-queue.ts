@@ -4,6 +4,7 @@ export class InterviewMessageQueue {
   private buffers = new Map<string, string[]>()
   private handlers = new Map<string, FlushHandler>()
   private frameId: number | null = null
+  private timeoutId: ReturnType<typeof setTimeout> | null = null
 
   register(messageId: string, handler: FlushHandler) {
     this.handlers.set(messageId, handler)
@@ -16,6 +17,11 @@ export class InterviewMessageQueue {
     if (!this.buffers.size && this.frameId !== null) {
       cancelAnimationFrame(this.frameId)
       this.frameId = null
+    }
+
+    if (!this.buffers.size && this.timeoutId !== null) {
+      clearTimeout(this.timeoutId)
+      this.timeoutId = null
     }
   }
 
@@ -45,19 +51,36 @@ export class InterviewMessageQueue {
       cancelAnimationFrame(this.frameId)
       this.frameId = null
     }
+
+    if (this.timeoutId !== null) {
+      clearTimeout(this.timeoutId)
+      this.timeoutId = null
+    }
   }
 
   private scheduleFlush() {
-    if (this.frameId !== null) return
+    if (this.frameId !== null || this.timeoutId !== null) return
 
-    this.frameId = requestAnimationFrame(() => {
-      this.frameId = null
+    if (typeof requestAnimationFrame === 'function') {
+      this.frameId = requestAnimationFrame(() => {
+        this.frameId = null
+        this.flushNow()
+
+        if (this.buffers.size) {
+          this.scheduleFlush()
+        }
+      })
+      return
+    }
+
+    this.timeoutId = setTimeout(() => {
+      this.timeoutId = null
       this.flushNow()
 
       if (this.buffers.size) {
         this.scheduleFlush()
       }
-    })
+    }, 16)
   }
 
   private flushMessage(messageId: string) {

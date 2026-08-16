@@ -1,6 +1,25 @@
 #include "services/InterviewService.hpp"
 
+#include <cctype>
 #include <utility>
+
+namespace {
+constexpr size_t kChunkFlushThreshold = 24;
+
+bool shouldFlushChunkBuffer(const std::string& buffer, const std::string& delta) {
+    if (buffer.size() >= kChunkFlushThreshold) {
+        return true;
+    }
+
+    for (unsigned char ch : delta) {
+        if (std::isspace(ch) || ch == '.' || ch == '!' || ch == '?' || ch == ',' || ch == ';' || ch == ':') {
+            return true;
+        }
+    }
+
+    return false;
+}
+}
 
 InterviewService::InterviewService(InterviewProvider &provider, ISessionRepository &repository)
     : m_provider(provider),
@@ -31,8 +50,21 @@ void InterviewService::streamInterview(
     }
 
     std::string assistantContent;
+    std::string pendingChunk;
     bool providerFailed = false;
     bool streamFinished = false;
+
+    const auto flushPendingChunk = [&]() {
+        if (pendingChunk.empty()) {
+            return;
+        }
+
+        InterviewStreamEvent chunkEvent;
+        chunkEvent.type = InterviewStreamEventType::Chunk;
+        chunkEvent.content = pendingChunk;
+        pendingChunk.clear();
+        callback(chunkEvent);
+    };
 
     m_provider.streamFeedback(
         request,
@@ -40,14 +72,38 @@ void InterviewService::streamInterview(
             // 回调里只做两件事：转发事件，以及拼接 assistant 的完整输出。
             if (event.type == InterviewStreamEventType::Chunk && event.content.has_value()) {
                 assistantContent += event.content.value();
-            } else if (event.type == InterviewStreamEventType::Error) {
-                providerFailed = true;
-            } else if (event.type == InterviewStreamEventType::Done) {
-                streamFinished = true;
+                pendingChunk += event.content.value();
+                if (!shouldFlushChunkBuffer(pendingChunk, event.content.value())) {
+                    return;
+                }
+                flushPendingChunk();
+                return;
             }
+
+            if (event.type == InterviewStreamEventType::Error) {
+                providerFailed = true;
+                flushPendingChunk();
+                callback(event);
+                return;
+            }
+
+            if (event.type == InterviewStreamEventType::Done) {
+                streamFinished = true;
+                flushPendingChunk();
+                callback(event);
+                return;
+            }
+
             callback(event);
         },
         providerContext);
+
+    // 有些 provider 可能不会显式发送 Done，这里补一次终止事件，避免前端挂住。
+    if (!providerFailed && !streamFinished) {
+        InterviewStreamEvent event;
+        event.type = InterviewStreamEventType::Done;
+        callback(event);
+    }
 
     // provider 正常结束后，再把完整 assistant 消息写回仓储。
     if (!providerFailed && streamFinished) {
@@ -111,4 +167,3 @@ std::optional<InterviewSessionDetail> InterviewService::getSession(const std::st
 void InterviewService::clearHistory() {
     m_sessionRepository.clearAll();
 }
-

@@ -9,7 +9,6 @@
 class InterviewController {
 public:
     explicit InterviewController(InterviewService& service,ReportService& reportService) : m_service(service),m_reportService(reportService) {};
-    void streamInterview(const httplib::Request& req, httplib::Response& res);
     void generateReport(const httplib::Request& req, httplib::Response& res);
     void getReport(const httplib::Request& req, httplib::Response& res);
     void listReports(const httplib::Request& req, httplib::Response& res);

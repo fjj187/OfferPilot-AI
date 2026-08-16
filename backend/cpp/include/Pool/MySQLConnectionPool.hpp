@@ -22,6 +22,14 @@ struct MySQLPoolConfig {
     size_t acquireTimeoutMs = 3000;
 };
 
+struct MySQLPoolStats {
+    size_t acquireRequests = 0;
+    size_t idleHits = 0;
+    size_t newConnections = 0;
+    size_t acquireTimeouts = 0;
+    size_t failedConnections = 0;
+};
+
 class MySQLConnectionPool;
 
 // RAII 句柄。
@@ -67,6 +75,7 @@ public:
     size_t idleSize() const;
     size_t totalSize() const;
     size_t busySize() const;
+    MySQLPoolStats stats() const;
 
 private:
     friend class MySQLConnHandle;
@@ -82,4 +91,5 @@ private:
     size_t m_total = 0;
     size_t m_busy = 0;
     bool m_shutdown = false;
+    MySQLPoolStats m_stats;
 };

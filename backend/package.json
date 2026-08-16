@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/app.ts",
+    "dev:cpp": "powershell -ExecutionPolicy Bypass -Command \"$env:DB_PASSWORD='123456'; .\\cpp\\mariadb\\start-local.ps1; cmd /c .\\cpp\\run-local.bat\"",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/app.js"
   },

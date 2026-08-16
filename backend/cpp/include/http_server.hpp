@@ -4,32 +4,43 @@
 
 #include "httplib.h"
 
-// 对 httplib::Server 的轻封装。
-// 统一提供启动、停止、路由注册和错误处理入口。
+// Lightweight wrapper around httplib::Server.
+// The wrapper keeps bind host and lifecycle control explicit for deployment.
 class HttpServer {
 public:
-    HttpServer(int port);
+    HttpServer(int port, std::string bindHost = "127.0.0.1");
     ~HttpServer();
 
-    // 启动 HTTP 服务。
-    void start();
-    // 停止 HTTP 服务。
+    // Start the HTTP server. Returns false when bind/listen fails.
+    bool start();
+
+    // Stop the HTTP server.
     void stop();
-    // 当前是否正在运行。
+
+    // Check whether the server is running.
     bool isRunning() const;
-    // 监听端口。
+
+    // Get the configured listen port.
     int getPort() const;
-    // 注册 GET 路由。
+
+    // Get the configured bind host.
+    const std::string& getBindHost() const;
+
+    // Register GET route.
     void get(const std::string& path, const httplib::Server::Handler& handler);
-    // 注册 POST 路由。
+
+    // Register POST route.
     void post(const std::string& path, const httplib::Server::Handler& handler);
-    // 配置中间件。
+
+    // Configure middleware.
     void setupMiddleware();
-    // 配置统一错误处理。
+
+    // Configure centralized error handling.
     void setupErrorHandler();
+
 private:
     httplib::Server m_server;
     int m_port;
+    std::string m_bindHost;
     bool m_running;
 };
-

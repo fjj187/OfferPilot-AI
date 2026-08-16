@@ -71,6 +71,7 @@ MySQLConn* MySQLConnectionPool::createRawConn() {
 
 MySQLConnHandle MySQLConnectionPool::acquire() {
     std::unique_lock<std::mutex> lock(m_mutex);
+    ++m_stats.acquireRequests;
 
     // 借连接不是无限等待，必须在 deadline 前拿到或返回空句柄。
     const auto deadline = std::chrono::steady_clock::now()
@@ -86,6 +87,7 @@ MySQLConnHandle MySQLConnectionPool::acquire() {
             MySQLConn* conn = m_idle.front();
             m_idle.pop();
             ++m_busy;
+            ++m_stats.idleHits;
             conn->refreshAlivetime();
             return MySQLConnHandle(this, conn);
         }
@@ -107,15 +109,18 @@ MySQLConnHandle MySQLConnectionPool::acquire() {
 
             if (!conn) {
                 --m_total;
+                ++m_stats.failedConnections;
                 return {};
             }
 
             ++m_busy;
+            ++m_stats.newConnections;
             return MySQLConnHandle(this, conn);
         }
 
         if (m_cv.wait_until(lock, deadline) == std::cv_status::timeout) {
             // 超时后让调用方自己决定是失败返回还是重试。
+            ++m_stats.acquireTimeouts;
             return {};
         }
     }
@@ -160,4 +165,9 @@ void MySQLConnectionPool::destroyIdleLocked() {
         delete m_idle.front();
         m_idle.pop();
     }
+}
+
+MySQLPoolStats MySQLConnectionPool::stats() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_stats;
 }

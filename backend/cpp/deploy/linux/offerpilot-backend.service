@@ -1,0 +1,23 @@
+[Unit]
+Description=OfferPilot C++ Backend
+After=network-online.target mariadb.service mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=offerpilot
+Group=offerpilot
+WorkingDirectory=/opt/offerpilot/backend/current
+# 生产环境配置文件，建议由运维提前写入。
+EnvironmentFile=-/etc/offerpilot/backend.env
+ExecStart=/opt/offerpilot/backend/current/offerpilot_backend
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=5
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
